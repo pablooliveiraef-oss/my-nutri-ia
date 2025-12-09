@@ -1,0 +1,7 @@
+{
+  "name": "MY NUTRI.IA",
+  "description": "Um aplicativo que usa inteligência artificial para analisar fotos das suas refeições, fornecendo uma análise detalhada de calorias, macronutrientes e micronutrientes. Registre suas refeições ao longo do dia para acompanhar seu consumo total e alcançar seus objetivos de saúde.\n",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
