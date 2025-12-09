@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import type { MealLog, MealAnalysis, DailyGoals, UserProfile, ActivityLog } from './types';
 import { analyzeFoodImage } from './services/geminiService';
 import { generateDailyPDF } from './services/pdfService';
@@ -42,6 +42,9 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [dailyGoals, setDailyGoals] = useState<DailyGoals>({ calories: 2000, protein: 120, carbs: 250, fat: 60, burnedCalories: 400 });
   
+  // Flag to ensure we don't overwrite localStorage with empty array on initial mount
+  const [isDataLoaded, setIsDataLoaded] = useState(false);
+
   // State for routing/sharing
   const [sharedMealId, setSharedMealId] = useState<string | null>(null);
   const [sharedMeal, setSharedMeal] = useState<MealLog | null>(null);
@@ -61,64 +64,71 @@ export default function App() {
           setUserProfile(JSON.parse(savedProfile));
       }
 
-      // Meals Log
-      const savedLog = localStorage.getItem('nutriVisionLog');
-      let parsedLog: MealLog[] = [];
-      if (savedLog) {
-          parsedLog = JSON.parse(savedLog);
-          setDailyLog(parsedLog);
-      }
-
       // Activities Log
       const savedActivities = localStorage.getItem('nutriVisionActivities');
       if (savedActivities) {
           setActivities(JSON.parse(savedActivities));
       }
 
-      // Check for Share Link (?mealId=xyz)
-      const params = new URLSearchParams(window.location.search);
-      const mealIdFromUrl = params.get('mealId');
-      if (mealIdFromUrl) {
-          setSharedMealId(mealIdFromUrl);
-          const foundMeal = parsedLog.find(m => m.id === mealIdFromUrl);
-          if (foundMeal) {
-              setSharedMeal(foundMeal);
-          } else {
-              setError("Refeição não encontrada ou link expirado.");
+      // Meals Log
+      const savedLog = localStorage.getItem('nutriVisionLog');
+      let parsedLog: MealLog[] = [];
+      if (savedLog) {
+          parsedLog = JSON.parse(savedLog);
+          setDailyLog(parsedLog);
+          
+          // Check for Share Link (?mealId=xyz)
+          const params = new URLSearchParams(window.location.search);
+          const mealIdFromUrl = params.get('mealId');
+          if (mealIdFromUrl) {
+              setSharedMealId(mealIdFromUrl);
+              const foundMeal = parsedLog.find(m => m.id === mealIdFromUrl);
+              if (foundMeal) {
+                  setSharedMeal(foundMeal);
+              } else {
+                  setError("Refeição não encontrada ou link expirado.");
+              }
           }
       }
+      
+      // Mark as loaded so we can start saving updates
+      setIsDataLoaded(true);
 
     } catch (e) {
       console.error("Failed to parse data from localStorage", e);
+      setIsDataLoaded(true); // Enable saving even if load failed (starts fresh)
     }
   }, []);
 
   // 2. Persist Goals
   useEffect(() => {
+    if (!isDataLoaded) return;
     localStorage.setItem('nutriVisionGoals', JSON.stringify(dailyGoals));
-  }, [dailyGoals]);
+  }, [dailyGoals, isDataLoaded]);
 
   // 3. Persist Profile
   useEffect(() => {
+    if (!isDataLoaded) return;
     localStorage.setItem('nutriVisionProfile', JSON.stringify(userProfile));
-  }, [userProfile]);
+  }, [userProfile, isDataLoaded]);
 
   // 4. Persist Log (with Quota check)
   useEffect(() => {
-      if (dailyLog.length === 0) return; 
+      if (!isDataLoaded) return; 
       try {
           localStorage.setItem('nutriVisionLog', JSON.stringify(dailyLog));
       } catch (e: any) {
           if (e.name === 'QuotaExceededError') {
-              setError("O armazenamento local está cheio. Refeições podem não ser salvas.");
+              setError("O armazenamento local está cheio. Refeições antigas podem não ser salvas.");
           }
       }
-  }, [dailyLog]);
+  }, [dailyLog, isDataLoaded]);
 
   // 5. Persist Activities
   useEffect(() => {
+    if (!isDataLoaded) return;
     localStorage.setItem('nutriVisionActivities', JSON.stringify(activities));
-  }, [activities]);
+  }, [activities, isDataLoaded]);
 
   const handleGoalsChange = (newGoals: DailyGoals) => {
     const numericGoals = {
@@ -160,7 +170,7 @@ export default function App() {
   const handleDeleteMeal = (id: string) => {
     const newLog = dailyLog.filter(meal => meal.id !== id);
     setDailyLog(newLog);
-    localStorage.setItem('nutriVisionLog', JSON.stringify(newLog));
+    // Persist immediately managed by useEffect, but ensured here for state consistency
   };
   
   const handleUpdateMeal = (updatedMeal: MealLog) => {
@@ -182,6 +192,31 @@ export default function App() {
       setSharedMeal(null);
       setError(null);
   };
+
+  // Group meals by date for "History" view
+  const mealGroups = useMemo(() => {
+      const groups: { date: string; meals: MealLog[] }[] = [];
+      const today = new Date().toLocaleDateString();
+      const yDate = new Date();
+      yDate.setDate(yDate.getDate() - 1);
+      const yesterday = yDate.toLocaleDateString();
+
+      dailyLog.forEach((meal) => {
+          // Extract date part from timestamp (assuming "dd/mm/yyyy, hh:mm:ss" or similar)
+          let dateLabel = meal.timestamp.split(',')[0].trim();
+          
+          if (dateLabel === today) dateLabel = 'Hoje';
+          else if (dateLabel === yesterday) dateLabel = 'Ontem';
+
+          const lastGroup = groups[groups.length - 1];
+          if (lastGroup && lastGroup.date === dateLabel) {
+              lastGroup.meals.push(meal);
+          } else {
+              groups.push({ date: dateLabel, meals: [meal] });
+          }
+      });
+      return groups;
+  }, [dailyLog]);
 
   // --- SHARED VIEW MODE ---
   if (sharedMealId && sharedMeal) {
@@ -263,17 +298,29 @@ export default function App() {
 
         {isLoading && <Loader />}
 
+        {/* History / Daily Log Section */}
         <div className="w-full max-w-2xl mt-8">
-            {dailyLog.length > 0 && !isLoading && (
-                 <h2 className="text-2xl font-bold text-center mb-4 text-gray-300 border-b-2 border-gray-700 pb-2">Diário de Hoje</h2>
+            {dailyLog.length === 0 && !isLoading && (
+                 <p className="text-center text-gray-500 italic mt-8">Nenhuma refeição registrada ainda.</p>
             )}
-            {dailyLog.map(meal => (
-                <ResultCard 
-                    key={meal.id} 
-                    meal={meal} 
-                    onDelete={handleDeleteMeal}
-                    onUpdate={handleUpdateMeal} 
-                />
+
+            {mealGroups.map((group) => (
+                <div key={group.date} className="mb-8 animate-fade-in">
+                    <div className="flex items-center gap-4 mb-4">
+                        <h2 className="text-2xl font-bold text-amber-400 uppercase tracking-wide">{group.date}</h2>
+                        <div className="flex-1 h-px bg-gray-700"></div>
+                    </div>
+                    <div className="space-y-6">
+                        {group.meals.map(meal => (
+                            <ResultCard 
+                                key={meal.id} 
+                                meal={meal} 
+                                onDelete={handleDeleteMeal}
+                                onUpdate={handleUpdateMeal} 
+                            />
+                        ))}
+                    </div>
+                </div>
             ))}
         </div>
       </main>
